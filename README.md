@@ -14,7 +14,7 @@ As of OpenCode v1.17.x, the built-in tools handle line endings inconsistently:
 
 | Tool          | Behavior                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------- |
-| `edit`        | ✅ Preserves the file's existing line endings natively (`detectLineEnding` in `edit.ts`)                  |
+| `edit`        | ⚠️ Converts its diff against the file's existing ending (`detectLineEnding` in `edit.ts`) — but only for *updates* to already-consistent files. Brand-new files (empty `oldString`) are written verbatim and stay LF-only. |
 | `write`       | ❌ No line-ending handling at all — content is written verbatim                                           |
 | `apply_patch` | ❌ Normalizes the patch text to LF and splits the original with `split("\n")` — updates to CRLF files end up with **mixed** endings (untouched lines keep `\r\n`, inserted lines get bare `\n`), and `Add File` hunks are always LF-only |
 
@@ -24,10 +24,10 @@ On Windows this silently breaks files that require CRLF (e.g. `.bat` scripts) an
 
 The plugin uses two hooks:
 
-1. **`tool.execute.before`** (for `write` only): before the file is written, the target's existing line ending is detected — while the original is still intact — and the `content` argument is converted to it. If the file doesn't exist yet, `os.EOL` is used.
-2. **`file.edited`** event: after any tool writes a file, the file is re-read and normalized to its dominant ending — if any `\r\n` is present, everything becomes CRLF; otherwise LF is kept. This is what repairs the mixed output of `apply_patch`, and it's a no-op for already-consistent files.
+1. **`tool.execute.before`** (for `write`): before the file is written, the target's existing line ending is detected — while the original is still intact — and the `content` argument is converted to it. If the file doesn't exist yet, `os.EOL` is used. This alone makes `write` correct from the first byte, so no after-hook is needed for it.
+2. **`tool.execute.before` + `tool.execute.after`** (for `edit` and `apply_patch`): the before-hook resolves each target file the call is about to touch — for `apply_patch` by parsing the patch headers (`Add File` / `Update File` / `Move to`) — and records the ending it should end up with (new files → `os.EOL`, existing files → their current ending, read while still intact), keyed by `callID`. The after-hook then normalizes those files. Since both tools run the project formatter *synchronously inside* their execution, the after-hook is guaranteed to run after the formatter — the fix gets the last word. (The `callID`-keyed map also keeps this working on OpenCode versions where the after-hook input doesn't include the tool args.)
 
-`edit` is intentionally left alone since OpenCode already preserves endings there.
+`write` doesn't need step 2 because its content is fixed before the write ever happens. `edit` and `apply_patch` do need it: both only convert their own diff/patch text against an *existing, already-consistent* file — new files and already-mixed files fall through untouched, which is exactly what the after-hook repairs.
 
 Binary safety: content containing a NUL byte (`\0`) is never touched — the same heuristic Git uses to detect binary files.
 
@@ -54,14 +54,15 @@ curl -o ~/.config/opencode/plugins/fix-line-endings.ts \
 
 Swap `~/.config/opencode/plugins/` for `.opencode/plugins/` in your project if you'd rather install it per-project instead of globally.
 
-Restart OpenCode afterwards — local plugins are only loaded at startup. Verified against the OpenCode v1.17.20 tool sources.
+Restart OpenCode afterwards — local plugins are only loaded at startup. Verified against the OpenCode v1.17.20 tool sources; the `edit`/`apply_patch` hook ordering (formatter runs inside the tool, `tool.execute.after` fires afterwards) was additionally confirmed against the current `dev` sources.
 
 ## Limitations
 
-- **`apply_patch` + `Add File` on Windows:** brand-new files created via `apply_patch` come out LF-only and stay LF. By the time the `file.edited` event fires, there is no way to tell the file was new, so the OS-default rule can't be applied. New files created via the `write` tool are handled correctly.
-- **Intentionally mixed line endings** within a single file are not preserved — the post-edit pass unifies them to CRLF as soon as one `\r\n` is present. In practice such files are almost always accidents, which is exactly what this plugin is meant to clean up.
-- **Formatters:** `write` and `apply_patch` run the project formatter after writing. The `file.edited` pass fires afterwards and gets the last word, but a formatter that aggressively rewrites endings on every run may fight with it.
-- The plugin adds one extra file read per edited file (plus a write when a fix is needed). Negligible in practice.
+- **Intentionally mixed line endings** within a single file are not preserved — every touched file is unified to a single ending. In practice such files are almost always accidents, which is exactly what this plugin is meant to clean up.
+- **Formatters:** for `write`, `edit`, and `apply_patch` the formatter runs inside the tool call, and this plugin's fix is applied deterministically afterwards (before-write for `write`, `tool.execute.after` for `edit`/`apply_patch`) — there's no race.
+- **Other write paths** (`bash`, MCP tools, etc.) aren't covered — only `write`, `edit`, and `apply_patch` go through these hooks.
+- **Aborted `edit`/`apply_patch` calls:** if the tool errors out, the after-hook never fires; recorded state for that call is pruned after 5 minutes rather than kept indefinitely.
+- The plugin adds one extra file read per touched file (plus a write when a fix is needed). Negligible in practice.
 
 ## Complementary hardening
 
