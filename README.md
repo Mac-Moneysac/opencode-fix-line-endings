@@ -31,6 +31,22 @@ The plugin uses two hooks:
 
 Binary safety: content containing a NUL byte (`\0`) is never touched — the same heuristic Git uses to detect binary files.
 
+## Behavior reference
+
+`desiredEnding` picks the ending to normalize a file to, based on what's already in it:
+
+| File content                | `desiredEnding` | Result    |
+| --------------------------- | --------------- |-----------|
+| CRLF + bare CR              | `\r\n`          | → CRLF    |
+| pure CR (classic Mac)       | `\r`            | unchanged |
+| LF + bare CR                | `\n`            | → LF      |
+| CRLF + LF                   | `\r\n`          | → CRLF    |
+| LF only                     | `\n`            | unchanged |
+| CRLF only                   | `\r\n`          | unchanged |
+| no newlines                 | `os.EOL`        | no-op     |
+
+Bare CR is preserved only in pure-CR files; otherwise it is normalized to the file's dominant ending.
+
 ## Install
 
 OpenCode loads local plugins straight from a plugin directory — no `package.json` or build step needed:

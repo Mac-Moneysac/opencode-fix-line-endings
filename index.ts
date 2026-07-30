@@ -14,18 +14,28 @@ import fs from "fs"
 import path from "path"
 import { EOL } from "os"
 
-type Ending = "\n" | "\r\n"
+type Ending = "\n" | "\r\n" | "\r"
 
 const PENDING_TTL_MS = 5 * 60 * 1000
 
-const convert = (text: string, eol: Ending) => text.replaceAll("\r\n", "\n").replaceAll("\n", eol)
+const convert = (text: string, eol: Ending) => {
+  // Collapse CRLF first so any remaining \r is guaranteed to be a bare CR.
+  let out = text.replaceAll("\r\n", "\n")
+  // Fold bare CR unless the target is pure CR (preserve classic-Mac files).
+  if (eol !== "\r") out = out.replaceAll("\r", "\n")
+  return out.replaceAll("\n", eol)
+}
 // NUL byte = almost certainly not a text file (same heuristic git uses)
 const looksBinary = (text: string) => text.includes("\0")
-
-/** Ending for the given text: any CRLF present -> CRLF, LF present -> LF, no newlines -> OS default. */
+ 
+/**
+ * Ending for the given text: any CRLF present -> CRLF, LF present -> LF,
+ * bare CR only (classic Mac) -> CR, no newlines -> OS default.
+ */
 function desiredEnding(text: string): Ending {
   if (text.includes("\r\n")) return "\r\n"
   if (text.includes("\n")) return "\n"
+  if (text.includes("\r")) return "\r"
   return EOL as Ending
 }
 
