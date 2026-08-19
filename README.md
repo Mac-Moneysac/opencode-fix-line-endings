@@ -49,19 +49,34 @@ Bare CR is preserved only in pure-CR files; otherwise it is normalized to the fi
 
 ## Install
 
-OpenCode loads local plugins straight from a plugin directory — no `package.json` or build step needed:
+**Option 1: From npm (recommended)**
+
+Add the package name to the `plugin` list in your `opencode.json` — global (`~/.config/opencode/opencode.json`) for every project, or in your project root for just that project:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-fix-line-endings"]
+}
+```
+
+OpenCode installs and loads npm plugins automatically — no manual download or build step needed. Pin a version with `"opencode-fix-line-endings@0.0.1"` if you want reproducible installs.
+
+**Option 2: Local file**
+
+OpenCode also loads local plugins straight from a plugin directory — no `package.json` or build step needed:
 
 - `~/.config/opencode/plugins/` — available in every project (global)
 - `.opencode/plugins/` — available only in this project
 
-**Option 1: Clone the repo**
+Clone the repo and copy the plugin file:
 
 ```sh
 git clone https://github.com/Mac-Moneysac/opencode-fix-line-endings.git
 cp opencode-fix-line-endings/index.ts ~/.config/opencode/plugins/fix-line-endings.ts
 ```
 
-**Option 2: Download the file directly**
+Or download the file directly:
 
 ```sh
 curl -o ~/.config/opencode/plugins/fix-line-endings.ts \
@@ -70,7 +85,7 @@ curl -o ~/.config/opencode/plugins/fix-line-endings.ts \
 
 Swap `~/.config/opencode/plugins/` for `.opencode/plugins/` in your project if you'd rather install it per-project instead of globally.
 
-Restart OpenCode afterwards — local plugins are only loaded at startup. Verified against the OpenCode v1.17.20 tool sources; the `edit`/`apply_patch` hook ordering (formatter runs inside the tool, `tool.execute.after` fires afterwards) was additionally confirmed against the current `dev` sources.
+Restart OpenCode afterwards — plugins are only loaded at startup. Verified against the OpenCode v1.17.20 tool sources; the `edit`/`apply_patch` hook ordering (formatter runs inside the tool, `tool.execute.after` fires afterwards) was additionally confirmed against the current `dev` sources.
 
 ## Limitations
 
