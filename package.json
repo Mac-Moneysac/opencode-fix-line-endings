@@ -3,7 +3,13 @@
   "version": "0.0.1",
   "description": "OpenCode plugin that keeps file line endings consistent when the agent writes or patches files",
   "main": "index.ts",
-  "keywords": ["opencode", "plugin", "line-endings", "crlf", "lf"],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "line-endings",
+    "crlf",
+    "lf"
+  ],
   "license": "MIT",
   "author": "Mac-Moneysac",
   "repository": {
@@ -14,5 +20,9 @@
     "index.ts",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@opencode-ai/plugin": "^1.18.23"
+  }
 }
