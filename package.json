@@ -1,7 +1,8 @@
 {
   "name": "opencode-fix-line-endings",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "OpenCode plugin that keeps file line endings consistent when the agent writes or patches files",
+  "type": "module",
   "main": "index.ts",
   "keywords": [
     "opencode",
@@ -23,6 +24,8 @@
   ],
   "devDependencies": {
     "@types/node": "^26.4.0",
-    "@opencode-ai/plugin": "^1.18.23"
+    "@opencode/plugin": "^2.0.11",
+    "@types/bun": "latest",
+    "typescript": "^5"
   }
 }

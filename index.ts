@@ -1,18 +1,18 @@
-// OpenCode plugin: preserve existing file line endings, OS default (os.EOL) for new files.
+// OpenCode V2 plugin: preserve existing file line endings, OS default (os.EOL) for new files.
 // - `write`: fixed via tool args in `tool.execute.before` (before the original is overwritten).
 //   No after-hook needed — the file is correct from the first byte the tool writes.
-// - `edit` / `apply_patch`: these tools convert their own diff/patch text against the file's
-//   existing ending, but only cover *updates* to already-consistent files. Two gaps remain:
-//   brand-new files (edit with empty oldString, apply_patch "Add File") are written verbatim
-//   and stay LF-only on Windows, and already-mixed files are never repaired. `tool.execute.before`
-//   records each target + its desired ending (existing file -> its current ending, new file ->
-//   os.EOL) per callID while the original is still intact; `tool.execute.after` then normalizes
-//   the result — which runs *after* the tool, including its synchronous formatter pass, so the
-//   fix gets the last word.
-import type { Plugin } from "@opencode-ai/plugin"
-import fs from "fs"
-import path from "path"
-import { EOL } from "os"
+// - `edit` / `patch`: these tools convert their own diff/patch text against the file's
+//   existing ending, but only cover *updates* to already-consistent files. `patch` additionally
+//   strips every trailing CR from the patch text and joins content with `\n`, so its inserted
+//   lines are always LF and `Add File` is LF-only; already-mixed files are never repaired.
+//   `tool.execute.before` records each target + its desired ending (existing file -> its current
+//   ending, new file -> os.EOL) per call id while the original is still intact;
+//   `tool.execute.after` then normalizes the result — which runs *after* the tool, including its
+//   synchronous formatter pass, so the fix gets the last word.
+import { Plugin } from "@opencode/plugin"
+import fs from "node:fs"
+import path from "node:path"
+import { EOL } from "node:os"
 
 type Ending = "\n" | "\r\n" | "\r"
 
@@ -27,7 +27,7 @@ const convert = (text: string, eol: Ending) => {
 }
 // NUL byte = almost certainly not a text file (same heuristic git uses)
 const looksBinary = (text: string) => text.includes("\0")
- 
+
 /**
  * Ending for the given text: any CRLF present -> CRLF, LF present -> LF,
  * bare CR only (classic Mac) -> CR, no newlines -> OS default.
@@ -39,7 +39,7 @@ function desiredEnding(text: string): Ending {
   return EOL as Ending
 }
 
-/** File targets of an apply_patch text: Add/Update headers (Move to = actual target). */
+/** File targets of a patch text: Add/Update headers (Move to = actual target). */
 function patchTargets(patchText: string): { path: string; from?: string }[] {
   const targets: { path: string; from?: string }[] = []
   const lines = patchText.split(/\r?\n/)
@@ -59,72 +59,77 @@ function patchTargets(patchText: string): { path: string; from?: string }[] {
   return targets
 }
 
-const plugin: Plugin = async (ctx) => {
-  const abs = (f: string) => (path.isAbsolute(f) ? f : path.resolve(ctx.directory, f))
-  // callID -> files touched by an `edit`/`apply_patch` call and the ending each should end up
-  // with. Filled in `tool.execute.before` (while originals are intact), consumed in
-  // `tool.execute.after`. TTL pruning covers calls whose after-hook never fires (tool error/abort).
-  const pending = new Map<string, { time: number; files: { path: string; eol: Ending }[] }>()
+export default Plugin.define({
+  id: "fix-line-endings",
 
-  const rememberTarget = (callID: string, dest: string, source: string) => {
-    const now = Date.now()
-    for (const [id, entry] of pending) if (now - entry.time > PENDING_TTL_MS) pending.delete(id)
-    let eol: Ending = EOL as Ending // new file -> OS default
-    try {
-      if (fs.existsSync(source)) {
-        const txt = fs.readFileSync(source, "utf-8")
-        if (looksBinary(txt)) return
-        eol = desiredEnding(txt) // keep original ending
+  async setup(ctx) {
+    const abs = (f: string) => (path.isAbsolute(f) ? f : path.resolve(ctx.location.directory, f))
+
+    // Failure/abort fallback: an `edit`/`patch` call whose after-hook never fires (aborted call)
+    // would otherwise leak its entry forever — prune entries older than the TTL on each before-hook.
+    const pending = new Map<string, { time: number; files: { path: string; eol: Ending }[] }>()
+
+    /** Ending a file already has, or os.EOL when it does not exist (yet). */
+    const endingFor = (file: string): Ending | undefined => {
+      let eol: Ending = EOL as Ending // new file -> OS default
+      try {
+        if (fs.existsSync(file)) {
+          const txt = fs.readFileSync(file, "utf-8")
+          if (looksBinary(txt)) return undefined
+          eol = desiredEnding(txt)
+        }
+      } catch {
+        return undefined
       }
-    } catch {
-      return
+      return eol
     }
-    const entry = pending.get(callID) ?? { time: now, files: [] }
-    entry.files.push({ path: dest, eol })
-    pending.set(callID, entry)
-  }
 
-  return {
-    "tool.execute.before": async (input, output) => {
-      if (input.tool === "write") {
-        const file = output.args.filePath
-        if (!file || typeof output.args.content !== "string") return
-        if (looksBinary(output.args.content)) return
-        const target = abs(file)
-        let eol: Ending = EOL as Ending // new file -> OS default
-        try {
-          if (fs.existsSync(target)) {
-            const txt = fs.readFileSync(target, "utf-8")
-            if (looksBinary(txt)) return
-            eol = desiredEnding(txt)
-          }
-        } catch {}
-        output.args.content = convert(output.args.content, eol)
+    const rememberTarget = (id: string, dest: string, source: string) => {
+      const now = Date.now()
+      for (const [key, entry] of pending) if (now - entry.time > PENDING_TTL_MS) pending.delete(key)
+      const eol = endingFor(source)
+      if (eol === undefined) return
+      const entry = pending.get(id) ?? { time: now, files: [] }
+      entry.files.push({ path: dest, eol })
+      pending.set(id, entry)
+    }
+
+    await ctx.tool.hook("execute.before", (event) => {
+      const input = event.input as Record<string, unknown>
+
+      if (event.tool === "write") {
+        const file = input.path
+        if (typeof file !== "string" || typeof input.content !== "string") return
+        if (looksBinary(input.content)) return
+        const eol = endingFor(abs(file))
+        if (eol === undefined) return
+        input.content = convert(input.content, eol)
         return
       }
 
-      if (input.tool === "edit") {
-        const file = output.args.filePath
+      if (event.tool === "edit") {
+        const file = input.path
         if (typeof file !== "string" || !file) return
-        rememberTarget(input.callID, abs(file), abs(file))
+        rememberTarget(event.id, abs(file), abs(file))
         return
       }
 
-      if (input.tool === "apply_patch") {
-        const patch = output.args.patchText
+      if (event.tool === "patch" || event.tool === "apply_patch") {
+        const patch = input.patchText
         if (typeof patch !== "string") return
         for (const target of patchTargets(patch)) {
-          rememberTarget(input.callID, abs(target.path), abs(target.from ?? target.path))
+          rememberTarget(event.id, abs(target.path), abs(target.from ?? target.path))
         }
       }
-    },
+    })
 
-    // Runs after `edit`/`apply_patch` have written *and* formatted (the formatter runs
+    // Runs after `edit`/`patch` have written *and* formatted (the formatter runs
     // synchronously inside the tool's execute), so nothing overwrites this fix afterwards.
-    "tool.execute.after": async (input) => {
-      const entry = pending.get(input.callID)
+    await ctx.tool.hook("execute.after", async (event) => {
+      const entry = pending.get(event.id)
       if (!entry) return
-      pending.delete(input.callID)
+      pending.delete(event.id)
+      if (event.status !== "completed") return
       for (const file of entry.files) {
         try {
           const content = await fs.promises.readFile(file.path, "utf-8")
@@ -133,8 +138,6 @@ const plugin: Plugin = async (ctx) => {
           if (content !== converted) await fs.promises.writeFile(file.path, converted, "utf-8")
         } catch {}
       }
-    },
-  }
-}
-
-export default plugin
+    })
+  },
+})
